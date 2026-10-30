@@ -4,6 +4,12 @@ All notable changes to GrubDrops.
 
 ## [Unreleased]
 
+## [2.2.4] — 2026-10-30
+
+### Changed
+- **Points controls.** The former Safety tab is now Settings, and Force watch setup is under Points → Force watch.
+- **Watch modes.** Replaced the overlapping account checkboxes with Drops + points, Drops only, and Points only choices; an existing no-watch setting remains visible.
+
 ## [2.2.3] — 2026-10-30
 
 ### Added

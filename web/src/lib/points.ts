@@ -14,3 +14,18 @@ export function movePlatformChannels(
 	let index = 0;
 	return channels.map((channel) => channel.platform === platform ? selected[index++] : channel);
 }
+
+export type PointsWatchMode = 'drops_points' | 'drops_only' | 'points_only' | 'none';
+
+export function pointsWatchMode(enabled: boolean, only: boolean): PointsWatchMode {
+	return enabled ? (only ? 'points_only' : 'drops_points') : (only ? 'none' : 'drops_only');
+}
+
+export function pointsWatchFlags(mode: PointsWatchMode): { enabled: boolean; only: boolean } {
+	switch (mode) {
+		case 'drops_points': return { enabled: true, only: false };
+		case 'drops_only': return { enabled: false, only: false };
+		case 'points_only': return { enabled: true, only: true };
+		case 'none': return { enabled: false, only: true };
+	}
+}

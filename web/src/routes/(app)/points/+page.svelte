@@ -3,16 +3,17 @@
 	import { api } from '$lib/app';
 	import type { Account, ForceChannel, Platform, PointsSafety } from '$lib/api/types';
 	import PageHead from '$lib/components/PageHead.svelte';
+	import ForceWatch from '$lib/components/ForceWatch.svelte';
 	import PlatformMark from '$lib/components/PlatformMark.svelte';
 	import { formatInt } from '$lib/format';
 	import { t } from '$lib/i18n/index.svelte';
 	import { getLive } from '$lib/live-context';
 	import { toPut } from '$lib/force-watch';
-	import { movePlatformChannels } from '$lib/points';
+	import { movePlatformChannels, pointsWatchFlags, pointsWatchMode, type PointsWatchMode } from '$lib/points';
 	import { reorder } from '$lib/drag';
 
 	const live = getLive();
-	type Tab = Platform | 'safety';
+	type Tab = Platform | 'force' | 'safety';
 	let tab = $state<Tab>('twitch');
 	let accountSettings = $state<Record<string, { enabled: boolean; only: boolean; streams: number }>>({});
 	let accountBusy = $state<Record<string, boolean>>({});
@@ -49,6 +50,10 @@
 	function accountValue(a: Account): { enabled: boolean; only: boolean; streams: number } {
 		return accountSettings[a.id] ?? { enabled: a.points_enabled ?? true, only: a.points_only ?? false, streams: a.points_streams ?? 2 };
 	}
+	function saveMode(a: Account, mode: PointsWatchMode): void {
+		void saveAccount(a, pointsWatchFlags(mode));
+	}
+
 
 	async function saveAccount(a: Account, patch: Partial<{ enabled: boolean; only: boolean; streams: number }>): Promise<void> {
 		const previous = accountValue(a);
@@ -131,7 +136,7 @@
 
 <PageHead title={t('nav.points')}>
 	<div class="tabs" role="tablist" aria-label={t('points.tabs')}>
-		{#each [{ id: 'twitch', label: 'accounts.twitch' }, { id: 'kick', label: 'accounts.kick' }, { id: 'safety', label: 'points.safety' }] as item (item.id)}
+		{#each [{ id: 'twitch', label: 'accounts.twitch' }, { id: 'kick', label: 'accounts.kick' }, { id: 'force', label: 'force.title' }, { id: 'safety', label: 'nav.settings' }] as item (item.id)}
 			<button type="button" role="tab" aria-selected={tab === item.id} class:on={tab === item.id} onclick={() => (tab = item.id as Tab)}>{t(item.label)}</button>
 		{/each}
 	</div>
@@ -151,16 +156,25 @@
 				<button type="button" class="btn" disabled={safetyBusy || safety.sleep_start === safety.sleep_end} onclick={saveSafety}>{safetyBusy ? t('points.saving') : t('points.save')}</button>
 			{/if}
 		</section>
+	{:else if tab === 'force'}
+		<ForceWatch />
 	{:else}
 		<section class="panel" aria-labelledby="accounts-h">
 			<h2 id="accounts-h">{t('points.account_settings')}</h2>
 			{#if live.accounts.filter((a) => a.platform === tab).length === 0}<p>{t('points.no_accounts')}</p>{/if}
 			{#each live.accounts.filter((a) => a.platform === tab) as a (a.id)}
 				{@const value = accountValue(a)}
+				{@const mode = pointsWatchMode(value.enabled, value.only)}
 				<div class="account" class:busy={accountBusy[a.id]}>
 					<strong>{a.name}</strong>
-					<label class="check"><input type="checkbox" checked={value.enabled} disabled={accountBusy[a.id]} onchange={(e) => void saveAccount(a, { enabled: e.currentTarget.checked })} />{t('points.enabled')}</label>
-					<label class="check"><input type="checkbox" checked={value.only} disabled={accountBusy[a.id]} onchange={(e) => void saveAccount(a, { only: e.currentTarget.checked })} />{t('points.only')}</label>
+					<label class="mode">{t('points.watch_mode')}
+						<select value={mode} disabled={accountBusy[a.id]} onchange={(e) => saveMode(a, e.currentTarget.value as PointsWatchMode)}>
+							{#if mode === 'none'}<option value="none">{t('points.mode_none')}</option>{/if}
+							<option value="drops_points">{t('points.mode_drops_points')}</option>
+							<option value="drops_only">{t('points.mode_drops_only')}</option>
+							<option value="points_only">{t('points.mode_points_only')}</option>
+						</select>
+					</label>
 					{#if a.platform === 'twitch'}
 						<label class="stream">{t('points.streams')}<input type="number" min="1" step="1" value={value.streams} disabled={accountBusy[a.id]} onchange={(e) => void saveAccount(a, { streams: e.currentTarget.valueAsNumber })} /></label>
 					{/if}
@@ -194,5 +208,6 @@
 <style>
 	.tabs{display:flex;gap:8px;border-bottom:1px solid var(--border);margin-bottom:18px}.tabs button{font:inherit;color:var(--muted);background:transparent;border:0;border-bottom:2px solid transparent;padding:10px 14px;cursor:pointer}.tabs button.on{color:var(--text);border-color:var(--accent)}
 	.panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:16px}.panel h2{font-size:17px;margin:0 0 14px}.account{display:flex;align-items:center;gap:18px;flex-wrap:wrap;border-top:1px solid var(--border);padding:12px 0}.account:first-of-type{border-top:0}.account strong{min-width:120px}.check{display:flex;align-items:center;gap:8px}.check input{accent-color:var(--accent)}.stream,.times label{display:grid;gap:5px;color:var(--muted);font-size:13px}.stream input,.times input{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:7px}.stream input{width:110px}.times{display:flex;gap:14px;margin:14px 0}.times input{width:145px}.hint{color:var(--muted);font-size:13px}ol{list-style:none;padding:0;margin:0}li{border-top:1px solid var(--border);padding:10px 0}.row{display:flex;align-items:center;gap:10px}.rank{width:24px;color:var(--muted)}.row strong{flex:1}.tools{display:flex;gap:5px}.tools button{width:34px;height:34px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);cursor:pointer}.tools button:disabled{opacity:.45;cursor:default}.balances{display:block;margin:4px 0 0 34px;color:var(--muted)}.dragging{opacity:.5}.bad{color:var(--red)}.btn{margin-top:14px}.busy{opacity:.7}
+	.mode{display:grid;gap:5px;color:var(--muted);font-size:13px}.mode select{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:7px;max-width:220px}
 	@media(max-width:600px){.account{gap:12px}.account strong{width:100%}.times{flex-direction:column}}
 </style>

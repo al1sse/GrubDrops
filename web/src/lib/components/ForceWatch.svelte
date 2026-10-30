@@ -7,10 +7,7 @@
 	import { t } from '$lib/i18n/index.svelte';
 	import { getLive } from '$lib/live-context';
 
-	/**
-	 * Rail panel under the lists: channels idle accounts watch when no drop is
-	 * up. Every change saves the whole ordered list.
-	 */
+	/** Shared channel manager; every change saves the ordered list. */
 	const live = getLive();
 	const list = $derived(live.forceWatch ?? []);
 

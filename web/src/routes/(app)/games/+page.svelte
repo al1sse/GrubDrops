@@ -16,7 +16,6 @@
 	import { scanStamp } from '$lib/scan';
 	import { reorder } from '$lib/drag';
 	import AccountLists from './AccountLists.svelte';
-	import ForceWatch from './ForceWatch.svelte';
 	import CampaignDrawer, { type CampaignTarget } from '$lib/components/CampaignDrawer.svelte';
 
 	const live = getLive();
@@ -279,7 +278,6 @@
 			</aside>
 			{#if live.accounts.length > 0}
 				<AccountLists />
-				<ForceWatch />
 			{/if}
 		</div>
 		<div class="main">
