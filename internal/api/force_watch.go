@@ -206,9 +206,6 @@ func (s *server) forceOverview(r *http.Request, snaps []runner.Snapshot, names m
 			continue
 		}
 		line := forceLiveLineJSON{Platform: c.Platform, Channel: c.Channel, Watchers: []string{}}
-		if len(ids) > 0 {
-			line.Points = s.pointsFor(c.Platform, c.Channel, ids)
-		}
 		for _, id := range ids {
 			if n, ok := names[id]; ok {
 				line.Watchers = append(line.Watchers, n)

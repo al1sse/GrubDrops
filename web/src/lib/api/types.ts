@@ -67,7 +67,7 @@ export interface ForceChannelPut {
 
 /** Home tile: live channels, watched first, at most two. watchers holds account names. */
 export type OverviewForceWatch = {
-	live: { platform: Platform; channel: string; watchers: string[]; points?: ChannelPointsBalance[] }[];
+	live: { platform: Platform; channel: string; watchers: string[] }[];
 	more: number;
 	total: number;
 } | null;
