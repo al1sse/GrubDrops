@@ -4,6 +4,11 @@ All notable changes to GrubDrops.
 
 ## [Unreleased]
 
+## [2.2.5a] — 2026-10-30
+
+### Changed
+- **Concurrent Twitch streams** can be set up to 10 per account (was 3).
+
 ## [2.2.5] — 2026-10-30
 
 ### Changed

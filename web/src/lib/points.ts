@@ -16,7 +16,7 @@ export function movePlatformChannels(
 }
 
 /** Mirrors store.MaxPointsStreams. */
-export const MAX_POINTS_STREAMS = 3;
+export const MAX_POINTS_STREAMS = 10;
 
 /** Twitch accounts the UI allows; keep in step with accounts.twitch_limit. */
 export const MAX_TWITCH_ACCOUNTS = 3;

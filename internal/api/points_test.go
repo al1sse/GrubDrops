@@ -89,7 +89,7 @@ func TestPointsHandlersDefaultsValidationAndAccountSettings(t *testing.T) {
 	require.Equal(t, 204, resp.StatusCode, string(body))
 	resp, body = e.do("GET", "/api/accounts", "", nil)
 	require.Equal(t, 200, resp.StatusCode)
-	assert.Contains(t, string(body), `"points_enabled":false,"points_only":true,"points_streams":3`)
+	assert.Contains(t, string(body), fmt.Sprintf(`"points_enabled":false,"points_only":true,"points_streams":%d`, store.MaxPointsStreams))
 	for _, invalid := range []map[string]any{
 		{"points_enabled": true, "points_only": false},
 		{"points_enabled": true, "points_only": false, "points_streams": 0},
@@ -102,7 +102,7 @@ func TestPointsHandlersDefaultsValidationAndAccountSettings(t *testing.T) {
 	}
 	resp, body = e.do("GET", "/api/accounts", "", nil)
 	require.Equal(t, 200, resp.StatusCode)
-	assert.Contains(t, string(body), `"points_enabled":false,"points_only":true,"points_streams":3`, "rejected requests write nothing")
+	assert.Contains(t, string(body), fmt.Sprintf(`"points_enabled":false,"points_only":true,"points_streams":%d`, store.MaxPointsStreams), "rejected requests write nothing")
 	kickID := e.createAccount("kick", "K")
 	resp, body = e.do("PUT", "/api/accounts/"+kickID+"/points", token, map[string]any{"points_enabled": true, "points_only": false})
 	require.Equal(t, 204, resp.StatusCode, string(body))

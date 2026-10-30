@@ -58,7 +58,7 @@ func TestRunnerConfigClampsStreamsAndMirrorsPointsEnabled(t *testing.T) {
 	e := newRosterEnv(t)
 	a := e.account(t, "a1", 1, true)
 	require.NoError(t, store.SavePointsAccountSettings(e.ctx, e.q, a.ID,
-		store.PointsAccountSettings{Enabled: true, Streams: 10}))
+		store.PointsAccountSettings{Enabled: true, Streams: 100}))
 	cfg := e.ro.runnerConfig(e.ctx, a, e.fake, platform.Session{}, nil)
 	assert.True(t, cfg.PointsEnabled)
 	assert.Equal(t, store.MaxPointsStreams, cfg.PointsStreams(), "a stored value above the cap is clamped")

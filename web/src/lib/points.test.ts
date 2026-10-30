@@ -33,9 +33,9 @@ describe('movePlatformChannels', () => {
 
 describe('validStreams', () => {
 	it('accepts integers from 1 to the cap only', () => {
-		expect(MAX_POINTS_STREAMS).toBe(3);
-		expect([1, 2, 3].every(validStreams)).toBe(true);
-		expect([0, 4, 100, 1.5, NaN, -1].some(validStreams)).toBe(false);
+		expect(MAX_POINTS_STREAMS).toBe(10);
+		expect([1, 2, 10].every(validStreams)).toBe(true);
+		expect([0, 11, 100, 1.5, NaN, -1].some(validStreams)).toBe(false);
 	});
 });
 
