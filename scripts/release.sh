@@ -2,11 +2,11 @@
 # scripts/release.sh — tag and push miner + browser images to ghcr.io.
 #
 # Usage:
-#   scripts/release.sh v0.1.0             # tag images and push
-#   scripts/release.sh v0.1.0 --build-only # build but don't push
+#   GITHUB_REPOSITORY_OWNER=al1sse scripts/release.sh v0.1.0
+#   GITHUB_REPOSITORY_OWNER=al1sse scripts/release.sh v0.1.0 --build-only
 #
 # Prereqs:
-#   docker login ghcr.io -u <github-user>  (PAT with packages:write)
+#   Set GITHUB_REPOSITORY_OWNER to the GHCR owner and run docker login ghcr.io
 
 set -euo pipefail
 
@@ -18,7 +18,12 @@ if [[ -z "$TAG" ]]; then
   exit 2
 fi
 
-REGISTRY="ghcr.io/aalejandrofer"
+REGISTRY_OWNER="${GITHUB_REPOSITORY_OWNER:-}"
+if [[ -z "$REGISTRY_OWNER" ]]; then
+  echo "GITHUB_REPOSITORY_OWNER must be set to the GHCR owner." >&2
+  exit 2
+fi
+REGISTRY="ghcr.io/$REGISTRY_OWNER"
 GRUB_IMAGE="$REGISTRY/grubdrops"
 BROWSER_IMAGE="$REGISTRY/grubdrops-browser"
 
