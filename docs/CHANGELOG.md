@@ -4,6 +4,27 @@ All notable changes to GrubDrops.
 
 ## [Unreleased]
 
+## [2.2.5] — 2026-10-30
+
+### Changed
+- **Force-watch channels.** Manage channels under their Twitch or Kick Points tab alongside channel-point balances and watch order; removed the separate Force watch tab.
+- **Channel-points bonuses** are claimed the moment Twitch announces them over PubSub, for accounts with points on, with one claim request instead of a lookup plus claim. A lookup on the first beat of a watch and every 30 minutes after catches any bonus PubSub missed; before, every watch checked every minute.
+- **Kick watch modes** read Drops + channel watching, Drops only and Channel watching only, since Kick has no channel-points bonus; the modes decide whether the account watches its Kick channels when it has no drop.
+- **Saving sleep or raid settings**, or changing the display time zone, no longer restarts force watches; only a sleeping account is woken to re-read the schedule.
+- **One stream per account** no longer looks up lower-ranked channels on each recheck.
+- **Concurrent Twitch streams** are capped at 3 per account; higher stored values are clamped.
+- **Drop rescans during force watch** run every 5 minutes again instead of every minute.
+
+### Fixed
+- **Raids** are joined once per raid instead of on every countdown update; a join that fails is retried on the next update.
+- **Sleep hours** no longer stop drop scanning: an account with games still finds a campaign that starts during sleep, and a force watch no longer starts and stops inside the sleep window. Rescans during sleep stay quiet unless a drop can start. A sleep window that starts just before midnight is now honoured.
+- **Channel-point balances** are not read for paused or points-off accounts (and no longer show "checking balance" for them), run at most two at a time, and a channel without channel points is rechecked hourly instead of every 5 minutes. A temporary Twitch error no longer counts as "no channel points".
+- **Channel-points claims and raid joins** recover after the browser sidecar restarts, and a restarted watch does not check for a bonus again within 30 minutes.
+- **Points page:** adding or removing a channel before the list loaded could erase the whole list; a failed settings load no longer offers to save defaults over your settings; account settings follow changes from other tabs and keep keyboard focus while saving; a channel-list save error stays on its own tab; the tabs are keyboard accessible; the buttons are styled.
+- **Accounts:** the list no longer fails when one account's points settings are unreadable, and saving the watch mode repairs such a row instead of failing.
+- **Home** shows the "no games" prompt when every account on the force list is set to Drops only, since none of them will watch.
+- **Welcome:** an add-account error clears when you pick a platform again.
+
 ## [2.2.4] — 2026-10-30
 
 ### Changed

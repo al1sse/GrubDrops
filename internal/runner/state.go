@@ -89,6 +89,8 @@ type Config struct {
 	PointsOnly bool
 	// PointsStreams is the live slot count for force/points watches; Kick uses one.
 	PointsStreams func() int
+	// PointsEnabled lets the runner claim channel-points bonuses while it watches.
+	PointsEnabled bool
 	// SleepUntil returns the next end of a scheduled sleep, when asleep.
 	SleepUntil func(now time.Time) (time.Time, bool)
 	// FollowRaids is read when a raid is received and again before joining.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -51,6 +52,64 @@ func TestRunnerConfigGatesForceChannelsByPointsSetting(t *testing.T) {
 	assert.Equal(t, []string{"xqc"}, cfg.ForceChannels())
 	assert.True(t, cfg.PointsOnly)
 	assert.Equal(t, 3, cfg.PointsStreams())
+}
+
+func TestRunnerConfigClampsStreamsAndMirrorsPointsEnabled(t *testing.T) {
+	e := newRosterEnv(t)
+	a := e.account(t, "a1", 1, true)
+	require.NoError(t, store.SavePointsAccountSettings(e.ctx, e.q, a.ID,
+		store.PointsAccountSettings{Enabled: true, Streams: 10}))
+	cfg := e.ro.runnerConfig(e.ctx, a, e.fake, platform.Session{}, nil)
+	assert.True(t, cfg.PointsEnabled)
+	assert.Equal(t, store.MaxPointsStreams, cfg.PointsStreams(), "a stored value above the cap is clamped")
+	require.NoError(t, store.SavePointsAccountSettings(e.ctx, e.q, a.ID,
+		store.PointsAccountSettings{Enabled: false, Streams: 2}))
+	cfg = e.ro.runnerConfig(e.ctx, a, e.fake, platform.Session{}, nil)
+	assert.False(t, cfg.PointsEnabled)
+	assert.Equal(t, 2, cfg.PointsStreams())
+}
+
+func TestScheduledSleepAroundMidnight(t *testing.T) {
+	loc := time.FixedZone("local", 2*60*60)
+	day := time.Date(2026, time.July, 12, 0, 0, 0, 0, loc)
+	next := day.AddDate(0, 0, 1)
+	nextEnd := func(acc string, hour int) time.Time {
+		return next.Add(time.Duration(hour)*time.Hour + sleepJitter(acc, next, "end"))
+	}
+
+	// An account whose jitter pulls tomorrow's 00:10 start back before midnight.
+	early := ""
+	for i := 0; i < 1000 && early == ""; i++ {
+		acc := fmt.Sprintf("acc%d", i)
+		if sleepJitter(acc, next, "start") < -10*time.Minute {
+			early = acc
+		}
+	}
+	require.NotEmpty(t, early, "no account with a negative start jitter found")
+	earlyStart := next.Add(10*time.Minute + sleepJitter(early, next, "start"))
+	require.True(t, earlyStart.Before(next), "window must start the previous evening")
+
+	shortSleep := store.PointsSafety{SleepEnabled: true, SleepStart: 10, SleepEnd: 480}
+	wrapSleep := store.PointsSafety{SleepEnabled: true, SleepStart: 23*60 + 30, SleepEnd: 360}
+	for _, tc := range []struct {
+		name     string
+		acc      string
+		settings store.PointsSafety
+		at       time.Time
+		asleep   bool
+		until    time.Time
+	}{
+		{"next-day window starts the previous evening", early, shortSleep, earlyStart, true, nextEnd(early, 8)},
+		{"just before that start", early, shortSleep, earlyStart.Add(-time.Minute), false, time.Time{}},
+		{"wrapping window at 23:50", "acc", wrapSleep, day.Add(23*time.Hour + 50*time.Minute), true, nextEnd("acc", 6)},
+		{"wrapping window at 00:10", "acc", wrapSleep, next.Add(10 * time.Minute), true, nextEnd("acc", 6)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			until, asleep := scheduledSleep(tc.at, tc.acc, tc.settings, loc)
+			assert.Equal(t, tc.asleep, asleep)
+			assert.True(t, until.Equal(tc.until), "until=%v want %v", until, tc.until)
+		})
+	}
 }
 func TestRunnerSleepUsesLiveConfiguredTimezone(t *testing.T) {
 	e := newRosterEnv(t)

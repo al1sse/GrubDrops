@@ -108,6 +108,32 @@ func TestRoster_NoGamesForceWatches(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond)
 }
 
+// Drops only on a Kick account (points off) stops its force watch once the
+// mode is saved, and the rebuilt runner idles as no_games instead.
+func TestRoster_KickDropsOnlyStopsForceWatch(t *testing.T) {
+	e := newRosterEnv(t)
+	e.withForce()
+	e.account(t, "a1", 1, true)
+	e.fake.Lookups["xqc"] = platformtest.Lookup{Stream: platform.Stream{Channel: "xqc", ChannelID: "1"}, Live: true}
+	e.setForce(t, []store.ForceChannel{{Platform: "kick", Channel: "xqc", Accounts: []string{"a1"}}})
+	e.boot(t)
+	require.Eventually(t, func() bool {
+		s, ok := snapshotOf(t, e, "a1")
+		return ok && s.State == runner.StateForceWatching
+	}, 5*time.Second, 20*time.Millisecond)
+
+	require.NoError(t, store.SavePointsAccountSettings(e.ctx, e.q, "a1", store.PointsAccountSettings{Enabled: false, Streams: 1}))
+	e.ro.reloadAccount("a1") // what PUT /accounts/{id}/points triggers
+	require.Eventually(t, func() bool {
+		s, ok := snapshotOf(t, e, "a1")
+		return ok && s.State == runner.StateNoGames
+	}, 5*time.Second, 20*time.Millisecond)
+	e.fake.Mu.Lock()
+	defer e.fake.Mu.Unlock()
+	assert.Equal(t, 1, strings.Count(strings.Join(e.fake.Calls, ","), "Start:xqc"), "no new force watch after Drops only")
+	assert.Contains(t, e.fake.Calls, "Stop:xqc")
+}
+
 // A force-list edit rebuilds only a runner that has exited as no_games, so
 // it can start force watching. Other runners take the edit live: an idle one
 // re-picks, a force-watching one rechecks in place, one mining a drop is left

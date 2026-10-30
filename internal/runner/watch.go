@@ -96,8 +96,16 @@ func (r *Runner) start(ctx context.Context) error {
 		r.noStream = map[string]bool{}
 		r.sleepNoStream = true
 		r.mu.Unlock()
-		// Nothing queued can be watched: a live force channel fills the gap.
-		if login, s, ok := r.liveForce(ctx, r.forceChannels()); ok {
+		// Nothing queued can be watched: a live force channel fills the gap,
+		// unless the schedule says sleep.
+		force := r.forceChannels()
+		if len(force) > 0 {
+			if until, asleep := r.scheduledSleep(); asleep {
+				r.enterSleep(ctx, until, true)
+				return nil
+			}
+		}
+		if login, s, ok := r.liveForce(ctx, force); ok {
 			slog.Info("runner no eligible streams live in any queued campaign; force watching",
 				"kind", "discovery", "account", r.cfg.AccountID, "campaign", camp.Name)
 			return r.beginForce(ctx, login, s)
@@ -364,7 +372,48 @@ func (r *Runner) beat(ctx context.Context, handle platform.WatchHandle) error {
 	if r.cfg.OnBeat != nil {
 		r.cfg.OnBeat(ctx, r.cfg.AccountID)
 	}
+	r.claimPoints(ctx, handle.Channel)
 	return nil
+}
+
+// claimPoints collects channel's points bonus after a beat when points are
+// on and the backend can, at most once per pointsClaimEvery per channel. It
+// never fails the beat.
+func (r *Runner) claimPoints(ctx context.Context, channel string) {
+	claimer, ok := r.cfg.Backend.(platform.ChannelPointsClaimer)
+	if !ok || !r.cfg.PointsEnabled {
+		return
+	}
+	r.mu.Lock()
+	if time.Since(r.pointsClaimAt[channel]) < pointsClaimEvery {
+		r.mu.Unlock()
+		return
+	}
+	if r.pointsClaimAt == nil {
+		r.pointsClaimAt = map[string]time.Time{}
+	}
+	now := time.Now()
+	for ch, at := range r.pointsClaimAt { // bound the map to channels still inside the window
+		if now.Sub(at) >= pointsClaimEvery {
+			delete(r.pointsClaimAt, ch)
+		}
+	}
+	r.pointsClaimAt[channel] = now
+	r.mu.Unlock()
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	claimed, err := claimer.ClaimChannelPoints(cctx, r.cfg.Session, channel)
+	switch {
+	case err != nil:
+		if ctx.Err() == nil {
+			slog.Warn("runner channel points claim failed", "kind", "error", "account", r.cfg.AccountID,
+				"channel", channel, "err", err)
+		}
+	case claimed:
+		// kind=info: "claim" counts drop claims on the Health page.
+		slog.Info("runner claimed channel points bonus", "kind", "info", "account", r.cfg.AccountID,
+			"channel", channel)
+	}
 }
 
 // sweepCompleted runs the multi-reward sweep (Kick): one watch advances many
@@ -497,6 +546,7 @@ func (r *Runner) stopWatch(ctx context.Context) {
 	r.extraWatches = nil
 	r.extraChannels = nil
 	r.extraRetryAt = time.Time{}
+	r.raidSeen = nil
 	r.clearWatchViewLocked()
 	r.mu.Unlock()
 	if h == nil && len(extras) == 0 {

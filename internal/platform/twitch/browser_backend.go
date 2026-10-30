@@ -79,6 +79,7 @@ var _ platform.PubSubAware = (*BrowserBackend)(nil)
 var _ platform.ChannelSubscriber = (*BrowserBackend)(nil)
 var _ platform.ChannelPointsBalanceReader = (*BrowserBackend)(nil)
 var _ platform.RaidJoiner = (*BrowserBackend)(nil)
+var _ platform.ChannelPointsClaimer = (*BrowserBackend)(nil)
 
 // NewBrowserBackend builds a Backend whose gql traffic is proxied
 // through the sidecar. `client` must satisfy both TwitchGQLSender and
@@ -329,9 +330,9 @@ func (b *BrowserBackend) SetAccountPubSubHooks(accountID string, h platform.PubS
 	b.pubsubMu.Unlock()
 }
 
-// SubscribeChannel adds a video-playback-by-id.<id> topic to the
-// account's PubSub socket. Use when a watcher starts a stream so
-// stream-down events fire instantly.
+// SubscribeChannel adds the video-playback-by-id.<id> and raid.<id> topics to
+// the account's PubSub socket. Use when a watcher starts a stream so
+// stream-down and raid events fire instantly.
 func (b *BrowserBackend) SubscribeChannel(accountID, channelID string) {
 	b.pubsubMu.Lock()
 	c := b.pubsubs[accountID]
@@ -343,7 +344,7 @@ func (b *BrowserBackend) SubscribeChannel(accountID, channelID string) {
 	c.AddTopic(TopicRaid(channelID))
 }
 
-// UnsubscribeChannel drops a video-playback-by-id topic.
+// UnsubscribeChannel drops the channel's video-playback-by-id.<id> and raid.<id> topics.
 func (b *BrowserBackend) UnsubscribeChannel(accountID, channelID string) {
 	b.pubsubMu.Lock()
 	c := b.pubsubs[accountID]
@@ -375,6 +376,7 @@ func (b *BrowserBackend) ensurePubSub(s platform.Session, a *twitchAccount) {
 			OnStreamUp:     hooks.OnStreamUp,
 			OnRewardCode:   hooks.OnRewardCode,
 			OnRaid:         hooks.OnRaid,
+			OnPointsClaim:  hooks.OnPointsClaim,
 		}
 	}
 	b.pubsubMu.Unlock()
@@ -393,10 +395,7 @@ func (b *BrowserBackend) ensurePubSub(s platform.Session, a *twitchAccount) {
 	b.pubsubs[s.AccountID] = client
 	b.pubsubMu.Unlock()
 	go func() {
-		topics := []string{
-			TopicUserDropEvents(userID),
-			TopicOnsiteNotifications(userID),
-		}
+		topics := userTopics(userID)
 		ctx, cancel := context.WithCancel(context.Background())
 		client.mu.Lock()
 		client.cancel = cancel

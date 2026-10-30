@@ -100,12 +100,8 @@ func (s *server) listAccounts(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("accounts: session lookup failed", "kind", "error", "account", a.ID, "err", err)
 		}
-		points, err := store.LoadPointsAccountSettings(ctx, s.d.Q, a.ID)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "internal")
-			return
-		}
-		streams := points.Streams
+		points := s.loadPointsSettings(ctx, a.ID)
+		streams := min(points.Streams, store.MaxPointsStreams) // legacy stored values above the cap
 		if a.Platform == "kick" {
 			streams = 1
 		}
@@ -131,6 +127,17 @@ func (s *server) listAccounts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// loadPointsSettings falls back to the roster's defaults when the stored value
+// is unreadable, so one bad row cannot break a list.
+func (s *server) loadPointsSettings(ctx context.Context, accountID string) store.PointsAccountSettings {
+	points, err := store.LoadPointsAccountSettings(ctx, s.d.Q, accountID)
+	if err != nil {
+		slog.Warn("accounts: points settings unreadable, using defaults", "kind", "error", "account", accountID, "err", err)
+		return store.PointsAccountSettings{Enabled: true, Streams: 2}
+	}
+	return points
+}
+
 func (s *server) putAccountPoints(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	acc, ok := s.account(w, r, id)
@@ -145,15 +152,11 @@ func (s *server) putAccountPoints(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
-	if body.Enabled == nil || body.Only == nil || (acc.Platform == "twitch" && (body.Streams == nil || *body.Streams <= 0)) {
+	if body.Enabled == nil || body.Only == nil || (acc.Platform == "twitch" && (body.Streams == nil || *body.Streams < 1 || *body.Streams > store.MaxPointsStreams)) {
 		writeErr(w, http.StatusBadRequest, "bad_request")
 		return
 	}
-	current, err := store.LoadPointsAccountSettings(r.Context(), s.d.Q, id)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal")
-		return
-	}
+	current := s.loadPointsSettings(r.Context(), id) // an unreadable row is repaired by this save
 	current.Enabled, current.Only = *body.Enabled, *body.Only
 	if acc.Platform == "twitch" {
 		current.Streams = *body.Streams

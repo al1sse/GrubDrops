@@ -20,6 +20,7 @@
 	import { moveTarget } from '$lib/games';
 	import { t } from '$lib/i18n/index.svelte';
 	import { getLive } from '$lib/live-context';
+	import { MAX_TWITCH_ACCOUNTS } from '$lib/points';
 	import { moveItem } from '$lib/upnext';
 	import { reorder } from '$lib/drag';
 
@@ -57,7 +58,7 @@
 	let flowEl = $state<AccountFlow | null>(null);
 
 	const runnerOf = (id: string) => live.runners.find((r) => r.account_id === id);
-	const twitchLimitReached = $derived(live.accounts.filter((a) => a.platform === 'twitch').length >= 3);
+	const twitchLimitReached = $derived(live.accounts.filter((a) => a.platform === 'twitch').length >= MAX_TWITCH_ACCOUNTS);
 	const shown = (a: Account) => !(adding && addId === a.id);
 
 	let ordering = $state(false);

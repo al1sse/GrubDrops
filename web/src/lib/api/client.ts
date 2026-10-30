@@ -110,10 +110,10 @@ export interface Api {
 	/** Rebuilds the account's runner. */
 	restartAccount(id: string): Promise<void>;
 	accountGames(id: string): Promise<AccountGames>;
-	/** games null keeps the stored list. */
 	pointsSafety(): Promise<PointsSafety>;
 	savePointsSafety(p: PointsSafety): Promise<PointsSafety>;
 	setAccountPoints(id: string, points: { points_enabled: boolean; points_only: boolean; points_streams?: number }): Promise<void>;
+	/** games null keeps the stored list. */
 	setAccountGames(id: string, own: boolean, games: AccountGame[] | null): Promise<AccountGames>;
 	/** A consistent copy of the database, as a file to save. */
 	snapshot(): Promise<{ blob: Blob; name: string }>;

@@ -58,6 +58,10 @@ type PubSubHandlers struct {
 	OnRewardCode func(notificationID, code, body string)
 	// OnRaid fires for raids announced on raid.<source_channel_id>.
 	OnRaid func(channelID, raidID string)
+	// OnPointsClaim fires for claim-available on
+	// `community-points-user-v1.<user_id>`; channelID is the broadcaster's
+	// numeric ID. Must not block.
+	OnPointsClaim func(channelID, claimID string)
 }
 
 // PubSubClient holds one WebSocket connection and the topics LISTENed
@@ -120,9 +124,11 @@ func (p *PubSubClient) Close() {
 // Reconnects on disconnect with exponential backoff (capped at 60s).
 // Returns when ctx is done — never returns nil otherwise.
 func (p *PubSubClient) Run(ctx context.Context, initialTopics []string) error {
+	p.mu.Lock()
 	for _, t := range initialTopics {
 		p.topics[t] = struct{}{}
 	}
+	p.mu.Unlock()
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -312,6 +318,9 @@ func (p *PubSubClient) dispatch(topic string, payload []byte) {
 	case startsWith(topic, "raid."):
 		p.dispatchRaidEvent(topic, payload)
 		return
+	case startsWith(topic, "community-points-user-v1."):
+		p.dispatchPointsEvent(payload)
+		return
 	case startsWith(topic, "onsite-notifications."):
 		// Onsite notifications surface user_drop_reward_reminder + unrelated
 		// events; redemption codes are not carried by drop-claim messages.
@@ -476,6 +485,32 @@ func (p *PubSubClient) dispatchRaidEvent(topic string, payload []byte) {
 		p.handlers.OnRaid(channelID, event.Raid.ID)
 	}
 }
+
+// dispatchPointsEvent fires OnPointsClaim for claim-available; every other
+// community-points-user-v1 type (points-earned, points-spent, ...) is ignored.
+func (p *PubSubClient) dispatchPointsEvent(payload []byte) {
+	var event struct {
+		Type string `json:"type"`
+		Data struct {
+			Claim struct {
+				ID        string `json:"id"`
+				ChannelID string `json:"channel_id"`
+			} `json:"claim"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &event); err != nil {
+		slog.Warn("pubsub points event decode failed", "err", err)
+		return
+	}
+	claim := event.Data.Claim
+	if event.Type != "claim-available" || claim.ID == "" || claim.ChannelID == "" {
+		return
+	}
+	if p.handlers.OnPointsClaim != nil {
+		p.handlers.OnPointsClaim(claim.ChannelID, claim.ID)
+	}
+}
+
 func writeListen(conn *websocket.Conn, token string, topics []string) error {
 	return conn.WriteJSON(map[string]any{
 		"type":  "LISTEN",
@@ -519,6 +554,21 @@ func TopicVideoPlaybackByID(channelID string) string {
 // stream — includes user_drop_reward_reminder among many others.
 func TopicOnsiteNotifications(userID int64) string {
 	return "onsite-notifications." + strconv.FormatInt(userID, 10)
+}
+
+// TopicCommunityPointsUser carries the user's channel-points events, notably
+// claim-available when a bonus is waiting.
+func TopicCommunityPointsUser(userID int64) string {
+	return "community-points-user-v1." + strconv.FormatInt(userID, 10)
+}
+
+// userTopics are the per-account topics both backends LISTEN on at bootstrap.
+func userTopics(userID int64) []string {
+	return []string{
+		TopicUserDropEvents(userID),
+		TopicOnsiteNotifications(userID),
+		TopicCommunityPointsUser(userID),
+	}
 }
 
 // TopicRaid subscribes to raids announced by the source broadcaster.

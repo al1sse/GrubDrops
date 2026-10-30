@@ -56,6 +56,11 @@ func (t *trampoline) hooks() platform.PubSubHooks {
 				r.onRaid(channelID, raidID)
 			}
 		},
+		OnPointsClaim: func(channelID, claimID string) {
+			if r := t.cur.Load(); r != nil {
+				r.onPointsClaim(channelID, claimID)
+			}
+		},
 		OnRewardCode: func(notificationID, code, title string) {
 			if r := t.cur.Load(); r != nil {
 				r.onRewardCode(notificationID, code, title)
@@ -99,6 +104,7 @@ func (r *Runner) directHooks() platform.PubSubHooks {
 		OnStreamDown:   r.onStreamDown,
 		OnStreamUp:     func(string) {},
 		OnRaid:         r.onRaid,
+		OnPointsClaim:  r.onPointsClaim,
 		OnRewardCode:   r.onRewardCode,
 	}
 }
@@ -165,6 +171,7 @@ func (r *Runner) onStreamDown(channelID string) {
 	}
 	for i, extra := range r.extraWatches {
 		if extra.stream.ChannelID == channelID {
+			r.forgetExtraLocked(extra)
 			r.extraWatches = append(r.extraWatches[:i], r.extraWatches[i+1:]...)
 			r.extraChannels = append(r.extraChannels[:i], r.extraChannels[i+1:]...)
 			r.extraRetryAt = time.Now().Add(recheckInterval)
@@ -188,14 +195,20 @@ func (r *Runner) onRaid(sourceID string, raidID string) {
 	if raidID == "" || r.cfg.FollowRaids == nil || !r.cfg.FollowRaids() {
 		return
 	}
+	joiner, ok := r.cfg.Backend.(platform.RaidJoiner)
 	r.mu.Lock()
 	ctx := r.runCtx
 	active := r.activeForceSourceLocked(sourceID)
-	r.mu.Unlock()
-	joiner, ok := r.cfg.Backend.(platform.RaidJoiner)
-	if !ok || ctx == nil || !active {
+	// Twitch repeats raid_update_v2 through a countdown: join each raid once.
+	if !ok || ctx == nil || !active || r.raidSeen[sourceID] == raidID {
+		r.mu.Unlock()
 		return
 	}
+	if r.raidSeen == nil {
+		r.raidSeen = map[string]string{}
+	}
+	r.raidSeen[sourceID] = raidID
+	r.mu.Unlock()
 	go func() {
 		timer := time.NewTimer(raidJoinDelay())
 		defer timer.Stop()
@@ -204,7 +217,16 @@ func (r *Runner) onRaid(sourceID string, raidID string) {
 			return
 		case <-timer.C:
 		}
+		// A join that did not happen must not block the next update of this raid.
+		forget := func() {
+			r.mu.Lock()
+			if r.raidSeen[sourceID] == raidID {
+				delete(r.raidSeen, sourceID)
+			}
+			r.mu.Unlock()
+		}
 		if !r.cfg.FollowRaids() {
+			forget()
 			return
 		}
 		r.mu.Lock()
@@ -215,7 +237,66 @@ func (r *Runner) onRaid(sourceID string, raidID string) {
 		}
 		if err := joiner.JoinRaid(ctx, r.cfg.Session, raidID); err != nil && ctx.Err() == nil {
 			slog.Warn("runner raid join failed", "kind", "error", "account", r.cfg.AccountID, "err", err)
+			forget()
 		}
+	}()
+}
+
+// onPointsClaim claims a channel-points bonus the moment Twitch announces it,
+// by claim ID. The per-beat claimPoints stays as the fallback for missed events.
+func (r *Runner) onPointsClaim(channelID, claimID string) {
+	claimer, ok := r.cfg.Backend.(platform.ChannelPointsClaimer)
+	if !ok || !r.cfg.PointsEnabled || channelID == "" || claimID == "" {
+		return
+	}
+	r.mu.Lock()
+	ctx := r.runCtx
+	channel := ""
+	if r.handle != nil && r.stream != nil && r.stream.ChannelID == channelID {
+		channel = r.handle.Channel
+	}
+	for _, extra := range r.extraWatches {
+		if extra.stream.ChannelID == channelID {
+			channel = extra.handle.Channel
+		}
+	}
+	_, seen := r.pointsClaimSeen[claimID]
+	if ctx == nil || channel == "" || seen {
+		r.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	if r.pointsClaimSeen == nil {
+		r.pointsClaimSeen = map[string]time.Time{}
+	}
+	for id, at := range r.pointsClaimSeen {
+		if now.Sub(at) >= time.Hour {
+			delete(r.pointsClaimSeen, id)
+		}
+	}
+	r.pointsClaimSeen[claimID] = now
+	r.mu.Unlock()
+	go func() {
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		err := claimer.ClaimChannelPointsBonus(cctx, r.cfg.Session, channelID, claimID)
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if err != nil {
+			delete(r.pointsClaimSeen, claimID) // a repeated event may retry
+			if ctx.Err() == nil {
+				slog.Warn("runner channel points claim failed", "kind", "error", "account", r.cfg.AccountID,
+					"channel", channel, "err", err)
+			}
+			return
+		}
+		if r.pointsClaimAt == nil {
+			r.pointsClaimAt = map[string]time.Time{}
+		}
+		r.pointsClaimAt[channel] = time.Now()
+		// kind=info: "claim" counts drop claims on the Health page.
+		slog.Info("runner claimed channel points bonus", "kind", "info", "account", r.cfg.AccountID,
+			"channel", channel)
 	}()
 }
 

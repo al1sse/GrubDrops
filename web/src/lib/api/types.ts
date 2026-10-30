@@ -57,7 +57,6 @@ export interface ForceChannel {
 	points?: ChannelPointsBalance[];
 }
 
-
 /** PUT /api/force-watch body item. The server rejects any other field. */
 export interface ForceChannelPut {
 	platform: Platform;
@@ -71,7 +70,6 @@ export type OverviewForceWatch = {
 	more: number;
 	total: number;
 } | null;
-
 
 export type RunnerState =
 	| 'idle'
@@ -323,7 +321,6 @@ export interface PointsSafety {
 	sleep_end: string;
 	follow_raids: boolean;
 }
-
 
 export interface Settings {
 	language: 'en' | 'es' | 'zh-CN' | 'tr';

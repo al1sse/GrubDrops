@@ -13,7 +13,7 @@ import (
 
 // Force watch: with the plan queue empty, the runner watches the first live
 // channel of the account's ordered force list. A drop always wins: every
-// forceScanInterval the force tick rescans the plan and a non-empty queue ends
+// recheckInterval the force tick rescans the plan and a non-empty queue ends
 // the force watch.
 
 // forceChannels reads the account's force list, or nil when the feature is
@@ -194,7 +194,7 @@ func (r *Runner) reconcileExtraForceMode(ctx context.Context, primary string, ch
 			afterPrimary = true
 			continue
 		}
-		if afterPrimary && login != "" {
+		if afterPrimary && capacity > 0 && login != "" {
 			if _, exists := positions[login]; !exists {
 				positions[login] = len(wanted)
 				wanted = append(wanted, login)
@@ -346,6 +346,11 @@ func (r *Runner) stopExtraWatches(ctx context.Context, extras []extraWatch) {
 	if len(extras) == 0 {
 		return
 	}
+	r.mu.Lock()
+	for _, extra := range extras {
+		r.forgetExtraLocked(extra)
+	}
+	r.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	for _, extra := range extras {
@@ -356,6 +361,12 @@ func (r *Runner) stopExtraWatches(ctx context.Context, extras []extraWatch) {
 			cs.UnsubscribeChannel(r.cfg.AccountID, extra.stream.ChannelID)
 		}
 	}
+}
+
+// forgetExtraLocked drops the per-channel raid and points-claim state of a
+// stopped extra stream. Caller holds r.mu.
+func (r *Runner) forgetExtraLocked(extra extraWatch) {
+	delete(r.raidSeen, extra.stream.ChannelID)
 }
 func forceAssignmentAllowsExtra(channels []string, primary, login string, slots int) bool {
 	if slots <= 1 {
@@ -437,16 +448,10 @@ func (r *Runner) forceTick(ctx context.Context) error {
 	if r.untilNextBeat() > 0 {
 		return nil
 	}
-	if r.cfg.SleepUntil != nil {
-		if until, asleep := r.cfg.SleepUntil(time.Now()); asleep {
-			r.stopForceWatch(ctx)
-			r.mu.Lock()
-			r.sleepUntil = until
-			r.sleepNoStream = false
-			r.mu.Unlock()
-			r.setState(ctx, StateSleeping)
-			return nil
-		}
+	if until, asleep := r.scheduledSleep(); asleep {
+		r.stopForceWatch(ctx)
+		r.enterSleep(ctx, until, false)
+		return nil
 	}
 	r.mu.Lock()
 	if r.handle == nil {
@@ -469,7 +474,9 @@ func (r *Runner) forceTick(ctx context.Context) error {
 			slog.Warn("runner extra force heartbeat failed", "kind", "error", "account", r.cfg.AccountID,
 				"channel", extra.handle.Channel, "retry_in", recheckInterval, "err", err)
 			r.stopExtraForce(extra.handle.Channel)
+			continue
 		}
+		r.claimPoints(ctx, extra.handle.Channel)
 	}
 	if !r.cfg.PointsOnly {
 		r.sweepCompleted(ctx)

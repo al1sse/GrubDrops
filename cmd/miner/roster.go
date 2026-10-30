@@ -361,7 +361,8 @@ func (ro *roster) runnerConfig(ctx context.Context, a gen.Account, b platform.Ba
 		Notifier:      ro.notifier,
 		Games:         games,
 		PointsOnly:    points.Only,
-		PointsStreams: func() int { return points.Streams },
+		PointsEnabled: points.Enabled,
+		PointsStreams: func() int { return min(points.Streams, store.MaxPointsStreams) },
 		SleepUntil: func(now time.Time) (time.Time, bool) {
 			settings := safety(ctx)
 			if !settings.SleepEnabled {
@@ -443,7 +444,9 @@ func scheduledSleep(now time.Time, accountID string, settings store.PointsSafety
 	start := settings.SleepStart
 	end := settings.SleepEnd
 	today := time.Date(year, month, day, 0, 0, 0, 0, location)
-	for _, offset := range []int{0, -1} {
+	// Yesterday's, today's and tomorrow's: negative jitter can pull the next
+	// window's start back before midnight.
+	for _, offset := range []int{1, 0, -1} {
 		startDate := today.AddDate(0, 0, offset)
 		endDate := startDate
 		if end <= start {

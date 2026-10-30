@@ -14,6 +14,11 @@ const (
 	pointsSafetyKey     = "points:safety"
 )
 
+// MaxPointsStreams caps one account's concurrent Twitch points streams.
+// Twitch credits channel points on about two concurrent streams, so more only
+// adds request volume.
+const MaxPointsStreams = 3
+
 type PointsAccountSettings struct {
 	Enabled bool `json:"enabled"`
 	Only    bool `json:"only"`

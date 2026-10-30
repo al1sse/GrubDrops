@@ -365,8 +365,7 @@ func (p *Pool) ForceListChanged(accountID string) bool {
 	return true
 }
 
-// SafetyChanged wakes only runners whose points safety can affect their
-// current force/sleep state.
+// SafetyChanged wakes sleeping runners so they re-read the sleep schedule.
 func (p *Pool) SafetyChanged() {
 	p.mu.Lock()
 	units := slices.Clone(p.units)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ForceChannel, Runner } from '$lib/api/types';
-import { knownIds, moveChannel, parseChannel, toPut, togglePick, watchingIds } from './force-watch';
+import { knownIds, parseChannel, toPut, togglePick, watchingIds } from './force-watch';
 
 const ch = (channel: string, platform: 'twitch' | 'kick' = 'twitch', accounts: string[] = []): ForceChannel => ({
 	platform,
@@ -27,20 +27,6 @@ describe('parseChannel', () => {
 	it('takes a hyphen on kick only, like the server', () => {
 		expect(parseChannel('kick.com/some-one')).toEqual({ platform: 'kick', name: 'some-one' });
 		expect(parseChannel('twitch.tv/some-one')).toBeNull();
-	});
-});
-
-describe('moveChannel', () => {
-	const list = [ch('a1'), ch('b1'), ch('c1')];
-	it('swaps with the neighbour', () => {
-		expect(moveChannel(list, 0, 1).map((c) => c.channel)).toEqual(['b1', 'a1', 'c1']);
-		expect(moveChannel(list, 2, -1).map((c) => c.channel)).toEqual(['a1', 'c1', 'b1']);
-	});
-	it('out of range returns a plain copy', () => {
-		const top = moveChannel(list, 0, -1);
-		expect(top.map((c) => c.channel)).toEqual(['a1', 'b1', 'c1']);
-		expect(top).not.toBe(list);
-		expect(moveChannel(list, 2, 1).map((c) => c.channel)).toEqual(['a1', 'b1', 'c1']);
 	});
 });
 

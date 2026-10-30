@@ -10,6 +10,7 @@
 	import { commitGames, dupePriority, moveGame, suggestions, withoutId } from '$lib/games';
 	import { t, tn } from '$lib/i18n/index.svelte';
 	import { getLive } from '$lib/live-context';
+	import { MAX_TWITCH_ACCOUNTS } from '$lib/points';
 	import { canContinue, segments, signedIn, startStep, type Step } from '$lib/onboarding';
 
 	const live = getLive();
@@ -44,6 +45,7 @@
 
 	async function onAdded(): Promise<void> {
 		added = true;
+		addError = '';
 		showFlow = false;
 		await live.refetchAll().catch(() => {});
 	}
@@ -210,9 +212,10 @@
 				{#if addError}<p class="bad" role="alert">{addError}</p>{/if}
 				{#if showFlow}
 					<AddAccount
-						twitchDisabled={live.accounts.filter((a) => a.platform === 'twitch').length >= 3}
+						twitchDisabled={live.accounts.filter((a) => a.platform === 'twitch').length >= MAX_TWITCH_ACCOUNTS}
 						onadded={onAdded}
 						onfail={(msg) => ((addError = msg), (showFlow = false))}
+						onpick={() => (addError = '')}
 					/>
 					{#if ready.length > 0}
 						<button type="button" class="btn quiet more" onclick={() => ((showFlow = false), (addError = ''))}>{t('welcome.cancel_add')}</button>

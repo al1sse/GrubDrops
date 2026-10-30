@@ -15,6 +15,16 @@ export function movePlatformChannels(
 	return channels.map((channel) => channel.platform === platform ? selected[index++] : channel);
 }
 
+/** Mirrors store.MaxPointsStreams. */
+export const MAX_POINTS_STREAMS = 3;
+
+/** Twitch accounts the UI allows; keep in step with accounts.twitch_limit. */
+export const MAX_TWITCH_ACCOUNTS = 3;
+
+export function validStreams(n: number): boolean {
+	return Number.isInteger(n) && n >= 1 && n <= MAX_POINTS_STREAMS;
+}
+
 export type PointsWatchMode = 'drops_points' | 'drops_only' | 'points_only' | 'none';
 
 export function pointsWatchMode(enabled: boolean, only: boolean): PointsWatchMode {

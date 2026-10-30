@@ -46,8 +46,10 @@ const (
 	// rewardCodeWindow is how long after a claim a reward code push is
 	// still attributed to the claimed target.
 	rewardCodeWindow        = 10 * time.Minute
-	forceDropScanInterval   = time.Minute
 	forcePointsScanInterval = 30 * time.Minute
+	// pointsClaimEvery is the least wait between channel-points lookups on
+	// one channel: the fallback for missed PubSub claim-available events.
+	pointsClaimEvery = 30 * time.Minute
 )
 
 type Runner struct {
@@ -121,8 +123,15 @@ type Runner struct {
 	// when liveForce passes them over (recheckInterval), so a broken one
 	// cannot block a live lower-ranked one.
 	forceFailed map[string]time.Time
+	// raidSeen is the last raid handled per source channel ID: Twitch repeats
+	// raid_update_v2 through a raid countdown, so each raid joins once.
+	raidSeen map[string]string
+	// pointsClaimAt is when each channel's points bonus was last tried.
+	pointsClaimAt map[string]time.Time
+	// pointsClaimSeen is the claim IDs the PubSub handler took, by arrival.
+	pointsClaimSeen map[string]time.Time
 	// Repeat-line suppression: each logs once per change.
-	logStepErr, logPicked, logStart, logProgress onceLog
+	logStepErr, logPicked, logStart, logProgress, logScanErr onceLog
 
 	// notifiedSwept dedupes sweep notifications by reward title, per run.
 	notifiedSwept map[string]struct{}
@@ -209,11 +218,11 @@ func (r *Runner) Rescan() {
 	}
 }
 
-// SafetyChanged re-evaluates an idle or force-watching runner against live
-// points safety settings; an active drop watch is never stopped.
+// SafetyChanged wakes a sleeping runner so it re-reads the sleep schedule.
+// Force watches re-read it every beat and an active drop watch is never
+// stopped, so neither is restarted.
 func (r *Runner) SafetyChanged() {
-	st := r.State()
-	if st == StateForceWatching || st == StateSleeping {
+	if r.State() == StateSleeping {
 		r.Rescan()
 	}
 }
@@ -389,7 +398,31 @@ func (r *Runner) forceCheckInterval() time.Duration {
 	if r.cfg.PointsOnly {
 		return forcePointsScanInterval
 	}
-	return forceDropScanInterval
+	return recheckInterval
+}
+
+// scheduledSleep reports whether the account's sleep schedule is active, and
+// when it ends.
+func (r *Runner) scheduledSleep() (time.Time, bool) {
+	if r.cfg.SleepUntil == nil {
+		return time.Time{}, false
+	}
+	return r.cfg.SleepUntil(time.Now())
+}
+
+// enterSleep sleeps until the schedule ends. noStream keeps the short
+// recheck when campaigns are queued but offline.
+func (r *Runner) enterSleep(ctx context.Context, until time.Time, noStream bool) {
+	r.mu.Lock()
+	r.sleepUntil = until
+	r.sleepNoStream = noStream
+	r.mu.Unlock()
+	r.setState(ctx, StateSleeping)
+}
+
+// minesDrops reports whether the runner scans for drop campaigns.
+func (r *Runner) minesDrops() bool {
+	return !r.cfg.PointsOnly && len(r.cfg.Games) > 0
 }
 
 func (r *Runner) clearSkip(id string) {
@@ -409,6 +442,8 @@ func (r *Runner) pick(ctx context.Context) error {
 	if !r.sleepUntil.IsZero() && !now.Before(r.sleepUntil) {
 		r.sleepUntil = time.Time{}
 	}
+	// A rescan inside a live sleep stays Sleeping unless it can start a drop.
+	asleep := r.state == StateSleeping && !r.sleepUntil.IsZero()
 	r.mu.Unlock()
 	force := r.forceChannels()
 	if len(r.cfg.Games) == 0 && len(force) == 0 {
@@ -431,17 +466,17 @@ func (r *Runner) pick(ctx context.Context) error {
 				return err
 			}
 			// A failed scan has no queue: force watch until the next recheck.
-			slog.Warn("runner scan failed; trying force channels", "kind", "error",
-				"account", r.cfg.AccountID, "err", err)
+			if r.logScanErr.Changed(err.Error()) {
+				slog.Warn("runner scan failed; trying force channels", "kind", "error",
+					"account", r.cfg.AccountID, "err", err)
+			}
 			res = plan.Result{}
+		} else {
+			r.logScanErr.Reset()
 		}
 	}
 
 	r.mu.Lock()
-	// A fresh pick retries every campaign: start keeps its own no-stream set
-	// while it walks the queue, so a campaign offline earlier is not starved.
-	r.noStream = map[string]bool{}
-	r.sleepNoStream = false
 	var next *plan.Target
 	if len(res.Queue) > 0 {
 		t := res.Queue[0]
@@ -450,6 +485,21 @@ func (r *Runner) pick(ctx context.Context) error {
 	if p := r.pinnedLocked(res, time.Now()); p != nil {
 		next = p
 	}
+	if asleep && next != nil {
+		cands := append([]plan.Target{*next}, res.Queue...)
+		r.mu.Unlock()
+		if _, ok := r.watchableQueued(ctx, cands); !ok {
+			r.mu.Lock()
+			r.sleepNoStream = true // recheck at the 5-minute pace
+			r.mu.Unlock()
+			return nil
+		}
+		r.mu.Lock()
+	}
+	// A fresh pick retries every campaign: start keeps its own no-stream set
+	// while it walks the queue, so a campaign offline earlier is not starved.
+	r.noStream = map[string]bool{}
+	r.sleepNoStream = false
 	if next != nil {
 		r.current = next
 		r.minutes = next.Minutes
@@ -475,13 +525,9 @@ func (r *Runner) pick(ctx context.Context) error {
 		}
 	}
 	r.mu.Unlock()
-	if len(force) > 0 && r.cfg.SleepUntil != nil {
-		if until, asleep := r.cfg.SleepUntil(time.Now()); asleep {
-			r.mu.Lock()
-			r.sleepUntil = until
-			r.sleepNoStream = false
-			r.mu.Unlock()
-			r.setState(ctx, StateSleeping)
+	if len(force) > 0 {
+		if until, asleep := r.scheduledSleep(); asleep {
+			r.enterSleep(ctx, until, false)
 			return nil
 		}
 	}
@@ -725,6 +771,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		return ctx.Err()
 	}
 
+	// asleepRescan: an idle wait ended mid-sleep, so pick runs in place and
+	// Sleeping does not flap through Picking.
+	asleepRescan := false
 	for {
 		if ctx.Err() != nil {
 			return exit()
@@ -735,7 +784,14 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.setState(ctx, StatePicking)
 		}
 		before := r.State()
-		err := r.step(ctx)
+		rescanned := asleepRescan
+		asleepRescan = false
+		var err error
+		if rescanned {
+			err = r.pick(ctx)
+		} else {
+			err = r.step(ctx)
+		}
 		after := r.State()
 		switch {
 		case err == nil:
@@ -748,16 +804,25 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.mu.Lock()
 			wait := idleWait(before, r.sleepNoStream, pace)
 			if before == StateSleeping && !r.sleepUntil.IsZero() {
-				wait = max(time.Millisecond, time.Until(r.sleepUntil))
+				until := max(time.Millisecond, time.Until(r.sleepUntil))
+				// A drop miner keeps scanning through the sleep, so a campaign
+				// that appears wins; others wait the sleep out.
+				if r.minesDrops() {
+					wait = min(wait, until)
+				} else {
+					wait = until
+				}
 			}
 			timer := time.NewTimer(wait)
 			r.nextRecheck = time.Now().Add(wait)
 			r.mu.Unlock()
+			timedOut := false
 			select {
 			case <-ctx.Done():
 				timer.Stop()
 				return exit()
 			case <-timer.C:
+				timedOut = true
 			case <-r.rescan:
 				timer.Stop()
 				r.forceScan.Store(false)
@@ -766,8 +831,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			r.mu.Lock()
 			r.nextRecheck = time.Time{}
+			asleepRescan = timedOut && before == StateSleeping && time.Now().Before(r.sleepUntil)
 			r.mu.Unlock()
-			r.setState(ctx, StatePicking)
+			if !asleepRescan {
+				r.setState(ctx, StatePicking)
+			}
 			continue
 		default:
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
@@ -793,7 +861,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		switch {
 		case after == StateWatching || after == StateForceWatching:
 			d = r.untilNextBeat()
-		case after != before:
+		case after != before || rescanned:
 			continue
 		default:
 			d = r.cfg.TickInterval

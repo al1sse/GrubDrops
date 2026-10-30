@@ -47,7 +47,6 @@
 	const nextScan = $derived(live.games?.next_scan_at ?? o?.status.next_scan_at ?? null);
 	const pausedIds = $derived(new Set(live.accounts.filter((a) => !a.enabled).map((a) => a.id)));
 	const cards = $derived(gameCards(live.games?.games ?? [], live.runners, pausedIds));
-	const accountNames = $derived(new Map(live.accounts.map((a) => [a.id, a.name])));
 	const idle = $derived(notMining(live.accounts, live.runners));
 	const IDLE_KEYS = {
 		idle: 'accounts.status.idle',

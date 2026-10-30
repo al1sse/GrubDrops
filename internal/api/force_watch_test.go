@@ -239,6 +239,23 @@ func TestOverview_NoGamesButForceWatch(t *testing.T) {
 	assert.Equal(t, "no_games", state(), "only a paused account assigned")
 }
 
+func TestOverview_DropsOnlyAccountIsNotForceUsable(t *testing.T) {
+	e := newResEnv(t, nil)
+	ctx := context.Background()
+	require.NoError(t, e.s.d.Chosen.Set(ctx, nil))
+	state := func() string { return e.overview()["status"].(map[string]any)["state"].(string) }
+	e.setForce([]store.ForceChannel{
+		{Platform: "twitch", Channel: "one", Accounts: []string{"a1"}},
+		{Platform: "kick", Channel: "two", Accounts: []string{"b2"}},
+	})
+	require.NoError(t, store.SavePointsAccountSettings(ctx, e.s.d.Q, "a1", store.PointsAccountSettings{Enabled: false, Streams: 2}))
+	require.NoError(t, store.SavePointsAccountSettings(ctx, e.s.d.Q, "b2", store.PointsAccountSettings{Enabled: false, Streams: 1}))
+	assert.Equal(t, "no_games", state(), "every assigned account is Drops only")
+
+	require.NoError(t, store.SavePointsAccountSettings(ctx, e.s.d.Q, "b2", store.PointsAccountSettings{Enabled: true, Streams: 1}))
+	assert.NotEqual(t, "no_games", state(), "a points-enabled account keeps the list usable")
+}
+
 func TestPutForceWatch_NormalizesPlatform(t *testing.T) {
 	e := newResEnv(t, nil)
 	_, tok := e.session()

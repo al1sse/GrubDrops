@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -147,8 +148,6 @@ func TestStartWatchBootstrapsPubSubWithoutCampaignScan(t *testing.T) {
 		switch req.OperationName {
 		case "CurrentUser":
 			_, _ = w.Write([]byte(`{"data":{"currentUser":{"id":"123","login":"user"}}}`))
-		case OpChannelPointsContext.Name:
-			_, _ = w.Write([]byte(`{"data":{"community":{"channel":{"id":"42","self":{"communityPoints":{"balance":123,"availableClaim":null}}}}}}`))
 		default:
 			t.Fatalf("unexpected operation %q", req.OperationName)
 		}
@@ -171,4 +170,10 @@ func TestStartWatchBootstrapsPubSubWithoutCampaignScan(t *testing.T) {
 	pubsub := b.pubsub
 	b.pubsubMu.Unlock()
 	require.NotNil(t, pubsub, "watch lifecycle must initialize PubSub without a campaign scan")
+	assert.Eventually(t, func() bool {
+		pubsub.mu.Lock()
+		defer pubsub.mu.Unlock()
+		_, ok := pubsub.topics[TopicCommunityPointsUser(123)]
+		return ok
+	}, 2*time.Second, 5*time.Millisecond, "bootstrap must subscribe the community-points topic")
 }

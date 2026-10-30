@@ -261,7 +261,7 @@ describe('client', () => {
 		]);
 		expect(await api.pointsSafety()).toEqual(JSON.parse(safety));
 		await api.savePointsSafety(JSON.parse(safety));
-		await api.setAccountPoints('a/1', { points_enabled: true, points_only: false, points_streams: 100 });
+		await api.setAccountPoints('a/1', { points_enabled: true, points_only: false, points_streams: 3 });
 		await api.setAccountPoints('k1', { points_enabled: false, points_only: true });
 		expect(calls.map((c) => [c.init.method ?? 'GET', c.url])).toEqual([
 			['GET', '/api/points'],
@@ -270,7 +270,7 @@ describe('client', () => {
 			['PUT', '/api/accounts/k1/points']
 		]);
 		expect(JSON.parse(calls[1].init.body as string)).toEqual(JSON.parse(safety));
-		expect(JSON.parse(calls[2].init.body as string)).toEqual({ points_enabled: true, points_only: false, points_streams: 100 });
+		expect(JSON.parse(calls[2].init.body as string)).toEqual({ points_enabled: true, points_only: false, points_streams: 3 });
 		expect(JSON.parse(calls[3].init.body as string)).toEqual({ points_enabled: false, points_only: true });
 	});
 });

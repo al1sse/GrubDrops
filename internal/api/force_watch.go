@@ -78,6 +78,15 @@ func (s *server) snapshots() []runner.Snapshot {
 // forceView builds the force-watch list with live state and watchers.
 func (s *server) forceView(list []store.ForceChannel) forceWatchJSON {
 	watch := forceWatchers(s.snapshots())
+	checked := map[string]bool{}
+	active := func(id string) bool {
+		v, ok := checked[id]
+		if !ok {
+			v = s.pointsActive(id)
+			checked[id] = v
+		}
+		return v
+	}
 	out := forceWatchJSON{Channels: make([]forceChannelJSON, 0, len(list))}
 	for _, c := range list {
 		accts := c.Accounts
@@ -91,7 +100,7 @@ func (s *server) forceView(list []store.ForceChannel) forceWatchJSON {
 		out.Channels = append(out.Channels, forceChannelJSON{
 			Platform: c.Platform, Channel: c.Channel,
 			Live: s.forceLive(c.Platform, c.Channel), Accounts: accts, Watching: w,
-			Points: s.pointsFor(c.Platform, c.Channel, append(append([]string(nil), accts...), w...)),
+			Points: s.pointsFor(c.Platform, c.Channel, append(append([]string(nil), accts...), w...), active),
 		})
 	}
 	return out
@@ -143,6 +152,7 @@ func (s *server) putForceWatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal")
 		return
 	}
+	s.prunePointBalances(list)
 	if s.d.ForceChanged != nil {
 		s.d.ForceChanged()
 	}
@@ -159,10 +169,9 @@ func (s *server) putForceWatch(w http.ResponseWriter, r *http.Request) {
 }
 
 type forceLiveLineJSON struct {
-	Platform string             `json:"platform"`
-	Channel  string             `json:"channel"`
-	Watchers []string           `json:"watchers"`
-	Points   []pointBalanceJSON `json:"points,omitempty"`
+	Platform string   `json:"platform"`
+	Channel  string   `json:"channel"`
+	Watchers []string `json:"watchers"`
 }
 
 type forceOverviewJSON struct {
@@ -177,8 +186,8 @@ const forceOverviewMax = 2
 // forceOverview is the Home tile block: live channels, watched ones first and
 // then panel order, at most forceOverviewMax. nil when the list is empty or
 // cannot be read. A channel an account is watching counts as live. usable
-// reports whether any channel has an enabled account, so the list gives an
-// account something to watch.
+// reports whether any channel has an enabled, points-enabled account: a Drops
+// only runner never force watches.
 func (s *server) forceOverview(r *http.Request, snaps []runner.Snapshot, names map[string]string, paused map[string]bool) (*forceOverviewJSON, bool) {
 	if s.d.ForceWatch == nil {
 		return nil, false
@@ -194,11 +203,18 @@ func (s *server) forceOverview(r *http.Request, snaps []runner.Snapshot, names m
 	watch := forceWatchers(snaps)
 	var watched, idle []forceLiveLineJSON
 	usable := false
+	pointsOn := map[string]bool{}
 	for _, c := range list {
 		for _, id := range c.Accounts {
-			if _, ok := names[id]; ok && !paused[id] {
-				usable = true
+			if _, ok := names[id]; !ok || paused[id] || usable {
+				continue
 			}
+			on, seen := pointsOn[id]
+			if !seen {
+				on = s.loadPointsSettings(r.Context(), id).Enabled
+				pointsOn[id] = on
+			}
+			usable = on
 		}
 		ids := watch[c.Platform+"/"+c.Channel]
 		live := s.forceLive(c.Platform, c.Channel)

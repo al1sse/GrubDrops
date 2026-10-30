@@ -116,3 +116,67 @@ func TestBrowserBackend_SpadeBeaconHonoursProxyTransport(t *testing.T) {
 	require.Nil(t, direct.accountFor("acc-1").c.http.Transport,
 		"nil transport must dial direct")
 }
+
+// tabLossSidecar fails the first `tabMissingLeft` gql calls with the
+// sidecar's "no authenticated tab" error (a restart that lost its tabs),
+// then answers the channel-points ops.
+type tabLossSidecar struct {
+	fakeSidecar
+	tabMissingLeft int
+	gqlCalls       int
+}
+
+func (f *tabLossSidecar) TwitchGQL(_ context.Context, accountID, opName string, _ []byte) ([]byte, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gqlCalls++
+	if f.tabMissingLeft > 0 {
+		f.tabMissingLeft--
+		return nil, 0, fmt.Errorf("no authenticated tab for account %s", accountID)
+	}
+	switch opName {
+	case OpChannelPointsContext.Name:
+		return []byte(`{"data":{"community":{"channel":{"id":"1","self":{"communityPoints":{"balance":7,"availableClaim":{"id":"bonus"}}}}}}}`), 200, nil
+	case OpClaimCommunityPoints.Name:
+		return []byte(`{"data":{"claimCommunityPoints":{}}}`), 200, nil
+	default:
+		return []byte(`{"data":{"joinRaid":{}}}`), 200, nil
+	}
+}
+
+// A points-only account never calls the other backend methods, so each
+// channel-points/raid call must itself recover from a lost sidecar tab:
+// re-authenticate and retry exactly once.
+func TestBrowserBackend_PointsCallsRecoverFromMissingTab(t *testing.T) {
+	ctx := context.Background()
+	calls := map[string]func(b *BrowserBackend) error{
+		"balance": func(b *BrowserBackend) error {
+			_, err := b.ChannelPointsBalance(ctx, browserTestSession(), "chan")
+			return err
+		},
+		"claim": func(b *BrowserBackend) error {
+			_, err := b.ClaimChannelPoints(ctx, browserTestSession(), "chan")
+			return err
+		},
+		"claim bonus": func(b *BrowserBackend) error {
+			return b.ClaimChannelPointsBonus(ctx, browserTestSession(), "chan", "claim-1")
+		},
+		"raid": func(b *BrowserBackend) error { return b.JoinRaid(ctx, browserTestSession(), "raid-1") },
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			f := &tabLossSidecar{tabMissingLeft: 1}
+			b := NewBrowserBackend(f)
+			require.NoError(t, call(b))
+			assert.Equal(t, 2, f.authCalls, "tab re-authenticated after the missing-tab error")
+		})
+		t.Run(name+" retries once", func(t *testing.T) {
+			f := &tabLossSidecar{tabMissingLeft: 100}
+			b := NewBrowserBackend(f)
+			err := call(b)
+			require.Error(t, err)
+			assert.True(t, isTabMissingErr(err))
+			assert.Equal(t, 2, f.gqlCalls, "exactly one retry")
+		})
+	}
+}

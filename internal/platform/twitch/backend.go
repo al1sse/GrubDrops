@@ -152,6 +152,7 @@ var _ platform.ChannelSubscriber = (*Backend)(nil)
 var _ platform.PubSubAware = (*Backend)(nil)
 var _ platform.ChannelPointsBalanceReader = (*Backend)(nil)
 var _ platform.RaidJoiner = (*Backend)(nil)
+var _ platform.ChannelPointsClaimer = (*Backend)(nil)
 
 func New() *Backend {
 	c := newClient()
@@ -328,6 +329,7 @@ func (b *Backend) SetAccountPubSubHooks(accountID string, h platform.PubSubHooks
 		OnStreamUp:     h.OnStreamUp,
 		OnRewardCode:   h.OnRewardCode,
 		OnRaid:         h.OnRaid,
+		OnPointsClaim:  h.OnPointsClaim,
 	}
 	b.pubsubMu.Unlock()
 }
@@ -361,18 +363,15 @@ func (b *Backend) ensurePubSub(s platform.Session) {
 	b.pubsubCancel = cancel
 	b.pubsubMu.Unlock()
 	go func() {
-		topics := []string{
-			TopicUserDropEvents(userID),
-			TopicOnsiteNotifications(userID),
-		}
+		topics := userTopics(userID)
 		if err := client.Run(ctx, topics); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("pubsub run exited", "err", err)
 		}
 	}()
 }
 
-// SubscribeChannel adds (or refreshes) a video-playback-by-id.<id>
-// topic on the PubSub socket so stream-up/down events fire. Idempotent.
+// SubscribeChannel adds (or refreshes) the video-playback-by-id.<id> and
+// raid.<id> topics on the PubSub socket so stream-up/down and raid events fire. Idempotent.
 // Caller passes the broadcaster's numeric channel id. The accountID is
 // accepted to satisfy platform.ChannelSubscriber (the direct backend
 // runs a single shared PubSub client today, so it's unused) — without
@@ -389,7 +388,7 @@ func (b *Backend) SubscribeChannel(_ string, channelID string) {
 	client.AddTopic(TopicRaid(channelID))
 }
 
-// UnsubscribeChannel drops a video-playback-by-id.<id> topic.
+// UnsubscribeChannel drops the channel's video-playback-by-id.<id> and raid.<id> topics.
 func (b *Backend) UnsubscribeChannel(_ string, channelID string) {
 	b.pubsubMu.Lock()
 	client := b.pubsub
@@ -554,15 +553,25 @@ func (b *Backend) AvailableDropIDs(ctx context.Context, s platform.Session, chan
 	return b.adv.availableDropIDs(ctx, s, channelID)
 }
 
-// ChannelPointsBalance performs a read-only lookup; bonus claims are kept in
-// the watch lifecycle and are never triggered by this method.
+// ChannelPointsBalance performs a read-only lookup; bonus claims go through
+// ClaimChannelPoints and are never triggered by this method.
 func (b *Backend) ChannelPointsBalance(ctx context.Context, s platform.Session, channel string) (int, error) {
-	b.c.bind(s)
 	return channelPointsBalance(ctx, b.c, s, channel)
 }
 
+// ClaimChannelPoints claims the channel's waiting bonus over the
+// proxy-routed client; the runner calls it on its own gated schedule.
+func (b *Backend) ClaimChannelPoints(ctx context.Context, s platform.Session, channel string) (bool, error) {
+	return claimChannelPoints(ctx, b.c, s, channel)
+}
+
+// ClaimChannelPointsBonus claims a known bonus by ID over the proxy-routed
+// client; PubSub claim-available events drive it.
+func (b *Backend) ClaimChannelPointsBonus(ctx context.Context, s platform.Session, channelID, claimID string) error {
+	return claimBonusByID(ctx, b.c, s, channelID, claimID)
+}
+
 func (b *Backend) JoinRaid(ctx context.Context, s platform.Session, raidID string) error {
-	b.c.bind(s)
 	return joinRaid(ctx, b.c, s, raidID)
 }
 

@@ -115,12 +115,13 @@ type server struct {
 	pointsMu        sync.Mutex
 	pointsCache     map[string]pointBalanceEntry
 	pointsInFlight  map[string]*pointBalanceFlight
+	pointsSlots     chan struct{} // bounds simultaneous Twitch balance reads
 	// twitch holds the in-flight Twitch device logins, account ID -> *twitchFlow.
 	twitch sync.Map
 }
 
 func newServer(d Deps) *server {
-	s := &server{d: d, bypass: readBypass()}
+	s := &server{d: d, bypass: readBypass(), pointsSlots: make(chan struct{}, pointsReadSlots)}
 	s.api = chi.NewRouter()
 	s.api.Use(CSRF(d.SecureCookies))
 	s.api.NotFound(func(w http.ResponseWriter, _ *http.Request) { writeErr(w, http.StatusNotFound, "not_found") })

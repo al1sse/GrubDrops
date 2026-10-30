@@ -23,6 +23,11 @@ var ErrClaimNeedsLink = errors.New("claim: account link required")
 // campaign the platform reports unlinked.
 var ErrClaimRefused = errors.New("claim refused")
 
+// ErrNoChannelPoints is matched with errors.Is when a channel exposes no
+// channel-points program to the account (Twitch returns no balance). It is a
+// stable property of the channel, so callers must not retry it soon.
+var ErrNoChannelPoints = errors.New("channel has no channel points")
+
 // LinkRechecker is an optional backend capability: forget the account's
 // link-refused claims, retry them now, and report what was claimed and how
 // many campaigns still need a link.
@@ -73,6 +78,18 @@ type RaidJoiner interface {
 	JoinRaid(ctx context.Context, s Session, raidID string) error
 }
 
+// ChannelPointsClaimer claims channel-points bonuses on channels the account
+// is watching.
+type ChannelPointsClaimer interface {
+	// ClaimChannelPoints looks the channel up and claims a waiting bonus;
+	// claimed is false with a nil error when none is waiting. Used as a
+	// low-frequency fallback for events PubSub missed.
+	ClaimChannelPoints(ctx context.Context, s Session, channel string) (claimed bool, err error)
+	// ClaimChannelPointsBonus claims the bonus a PubSub claim-available
+	// event announced, by its claim ID, with no lookup.
+	ClaimChannelPointsBonus(ctx context.Context, s Session, channelID, claimID string) error
+}
+
 // PubSubHooks is the per-account real-time callback surface a Watcher
 // installs into a PubSubAware backend. All callbacks may fire from any
 // goroutine; implementations must not block.
@@ -100,6 +117,9 @@ type PubSubHooks struct {
 	// OnRaid fires for a raid announced on raid.<channelID>; channelID is
 	// the source broadcaster and raidID is the joinable Twitch raid ID.
 	OnRaid func(channelID, raidID string)
+	// OnPointsClaim fires for a community-points-user-v1.<uid>
+	// claim-available event: a channel-points bonus is waiting on channelID.
+	OnPointsClaim func(channelID, claimID string)
 }
 
 // PubSubAware is an optional backend capability. Backends that expose

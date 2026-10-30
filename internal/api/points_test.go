@@ -1,8 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +18,7 @@ import (
 	"github.com/aalejandrofer/grubdrops/internal/platform"
 	"github.com/aalejandrofer/grubdrops/internal/platform/platformtest"
 	"github.com/aalejandrofer/grubdrops/internal/store"
+	"github.com/aalejandrofer/grubdrops/internal/store/gen"
 )
 
 type balanceBackend struct {
@@ -78,19 +85,24 @@ func TestPointsHandlersDefaultsValidationAndAccountSettings(t *testing.T) {
 	require.Equal(t, 200, resp.StatusCode, string(body))
 	assert.JSONEq(t, `{"sleep_enabled":false,"sleep_start":"22:30","sleep_end":"06:30","follow_raids":false}`, string(body))
 
-	resp, body = e.do("PUT", "/api/accounts/"+id+"/points", token, map[string]any{"points_enabled": false, "points_only": true, "points_streams": 10000})
+	resp, body = e.do("PUT", "/api/accounts/"+id+"/points", token, map[string]any{"points_enabled": false, "points_only": true, "points_streams": store.MaxPointsStreams})
 	require.Equal(t, 204, resp.StatusCode, string(body))
 	resp, body = e.do("GET", "/api/accounts", "", nil)
 	require.Equal(t, 200, resp.StatusCode)
-	assert.Contains(t, string(body), `"points_enabled":false,"points_only":true,"points_streams":10000`)
+	assert.Contains(t, string(body), `"points_enabled":false,"points_only":true,"points_streams":3`)
 	for _, invalid := range []map[string]any{
 		{"points_enabled": true, "points_only": false},
 		{"points_enabled": true, "points_only": false, "points_streams": 0},
 		{"points_enabled": true, "points_only": false, "points_streams": -1},
+		{"points_enabled": true, "points_only": false, "points_streams": store.MaxPointsStreams + 1},
+		{"points_enabled": true, "points_only": false, "points_streams": 10000},
 	} {
 		resp, _ = e.do("PUT", "/api/accounts/"+id+"/points", token, invalid)
 		assert.Equal(t, 400, resp.StatusCode)
 	}
+	resp, body = e.do("GET", "/api/accounts", "", nil)
+	require.Equal(t, 200, resp.StatusCode)
+	assert.Contains(t, string(body), `"points_enabled":false,"points_only":true,"points_streams":3`, "rejected requests write nothing")
 	kickID := e.createAccount("kick", "K")
 	resp, body = e.do("PUT", "/api/accounts/"+kickID+"/points", token, map[string]any{"points_enabled": true, "points_only": false})
 	require.Equal(t, 204, resp.StatusCode, string(body))
@@ -134,7 +146,7 @@ func TestPointsBalanceRefreshIsAsyncAndFailureKeepsStaleValue(t *testing.T) {
 	events, cancel := e.s.d.Hub.Subscribe()
 	defer cancel()
 
-	first := e.s.pointsFor("twitch", "channel", []string{id})
+	first := e.s.pointsFor("twitch", "channel", []string{id}, e.s.pointsActive)
 	require.Len(t, first, 1)
 	assert.Nil(t, first[0].Balance)
 	assert.Equal(t, "channel", <-backend.calls)
@@ -147,14 +159,14 @@ func TestPointsBalanceRefreshIsAsyncAndFailureKeepsStaleValue(t *testing.T) {
 	assert.Equal(t, EventForceWatch, recv(t, events).Name)
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		got := e.s.pointsFor("twitch", "channel", []string{id})
+		got := e.s.pointsFor("twitch", "channel", []string{id}, e.s.pointsActive)
 		if got[0].Balance != nil {
 			assert.Equal(t, 321, *got[0].Balance)
 			break
 		}
 		time.Sleep(time.Millisecond)
 	}
-	got := e.s.pointsFor("twitch", "channel", []string{id})
+	got := e.s.pointsFor("twitch", "channel", []string{id}, e.s.pointsActive)
 	require.NotNil(t, got[0].Balance)
 	assert.Equal(t, 321, *got[0].Balance)
 	assert.NotNil(t, got[0].UpdatedAt)
@@ -168,7 +180,7 @@ func TestPointsBalanceRefreshIsAsyncAndFailureKeepsStaleValue(t *testing.T) {
 	e.s.pointsCache[id+"/channel"] = entry
 	backend.done = make(chan struct{})
 	e.s.pointsMu.Unlock()
-	stale := e.s.pointsFor("twitch", "channel", []string{id})
+	stale := e.s.pointsFor("twitch", "channel", []string{id}, e.s.pointsActive)
 	require.NotNil(t, stale[0].Balance)
 	assert.Equal(t, 321, *stale[0].Balance)
 	select {
@@ -195,6 +207,287 @@ func TestPointsBalanceRefreshIsAsyncAndFailureKeepsStaleValue(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("refresh remained in flight")
+}
+
+func TestListAccountsSurvivesBadAndLegacyPointsSettings(t *testing.T) {
+	e, _ := accountsEnv(t)
+	bad := e.createAccount("twitch", "Bad")
+	legacy := e.createAccount("twitch", "Legacy")
+	ctx := context.Background()
+	require.NoError(t, e.s.d.Q.UpsertSettingString(ctx, gen.UpsertSettingStringParams{Key: "points:account:" + bad, Value: []byte("{not json")}))
+	require.NoError(t, store.SavePointsAccountSettings(ctx, e.s.d.Q, legacy, store.PointsAccountSettings{Enabled: true, Streams: 100}))
+
+	resp, body := e.do("GET", "/api/accounts", "", nil)
+	require.Equal(t, 200, resp.StatusCode, string(body))
+	var list []struct {
+		ID      string `json:"id"`
+		Enabled bool   `json:"points_enabled"`
+		Only    bool   `json:"points_only"`
+		Streams int    `json:"points_streams"`
+	}
+	require.NoError(t, json.Unmarshal(body, &list))
+	got := map[string][3]any{}
+	for _, a := range list {
+		got[a.ID] = [3]any{a.Enabled, a.Only, a.Streams}
+	}
+	assert.Equal(t, [3]any{true, false, 2}, got[bad], "unreadable row falls back to the roster defaults")
+	assert.Equal(t, [3]any{true, false, store.MaxPointsStreams}, got[legacy], "legacy value above the cap is clamped")
+}
+
+func TestPutAccountPointsRepairsUnreadableRow(t *testing.T) {
+	e, _ := accountsEnv(t)
+	id := e.createAccount("twitch", "T")
+	_, token := e.session()
+	require.NoError(t, e.s.d.Q.UpsertSettingString(context.Background(), gen.UpsertSettingStringParams{Key: "points:account:" + id, Value: []byte("{not json")}))
+
+	resp, body := e.do("PUT", "/api/accounts/"+id+"/points", token, map[string]any{"points_enabled": false, "points_only": true, "points_streams": 3})
+	require.Equal(t, 204, resp.StatusCode, string(body))
+	resp, body = e.do("GET", "/api/accounts", "", nil)
+	require.Equal(t, 200, resp.StatusCode)
+	assert.Contains(t, string(body), `"points_enabled":false,"points_only":true,"points_streams":3`)
+}
+
+// slotBackend blocks every balance read until release is closed and records
+// the peak number of simultaneous reads.
+type slotBackend struct {
+	platform.Backend
+	mu       sync.Mutex
+	inflight int
+	peak     int
+	started  chan string
+	release  chan struct{}
+	errs     map[string]error
+}
+
+func newSlotBackend(open bool) *slotBackend {
+	b := &slotBackend{started: make(chan string, 16), release: make(chan struct{}), errs: map[string]error{}}
+	if open {
+		close(b.release)
+	}
+	return b
+}
+
+func (*slotBackend) Name() string { return "twitch" }
+func (b *slotBackend) ChannelPointsBalance(ctx context.Context, _ platform.Session, channel string) (int, error) {
+	b.mu.Lock()
+	b.inflight++
+	b.peak = max(b.peak, b.inflight)
+	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		b.inflight--
+		b.mu.Unlock()
+	}()
+	b.started <- channel
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+	}
+	return 7, b.errs[channel]
+}
+
+func recvStarted(t *testing.T, b *slotBackend) string {
+	t.Helper()
+	select {
+	case ch := <-b.started:
+		return ch
+	case <-time.After(2 * time.Second):
+		t.Fatal("balance read did not start")
+		return ""
+	}
+}
+
+func waitPointsIdle(t *testing.T, e *env) {
+	t.Helper()
+	assert.Eventually(t, func() bool {
+		e.s.pointsMu.Lock()
+		defer e.s.pointsMu.Unlock()
+		return len(e.s.pointsInFlight) == 0
+	}, 2*time.Second, time.Millisecond)
+}
+
+func TestPointsForSkipsPausedAndPointsDisabledAccounts(t *testing.T) {
+	backend := newSlotBackend(true)
+	e, _ := accountsEnv(t, backend)
+	id := e.createAccount("twitch", "T")
+	_, token := e.session()
+	require.NoError(t, e.s.d.Sessions.Put(context.Background(), id, platform.Session{AccessToken: "token", ExpiresAt: time.Now().Add(time.Hour)}))
+
+	resp, body := e.do("PUT", "/api/accounts/"+id+"/enabled", token, map[string]bool{"enabled": false})
+	require.Equal(t, 204, resp.StatusCode, string(body))
+	assert.Empty(t, e.s.pointsFor("twitch", "channel", []string{id}, e.s.pointsActive), "a paused account is not listed")
+
+	resp, body = e.do("PUT", "/api/accounts/"+id+"/enabled", token, map[string]bool{"enabled": true})
+	require.Equal(t, 204, resp.StatusCode, string(body))
+	require.NoError(t, store.SavePointsAccountSettings(context.Background(), e.s.d.Q, id, store.PointsAccountSettings{Enabled: false, Streams: 2}))
+	assert.Empty(t, e.s.pointsFor("twitch", "channel", []string{id}, e.s.pointsActive), "a points-off account is not listed")
+
+	e.s.pointsMu.Lock()
+	assert.Empty(t, e.s.pointsInFlight, "no read may start for a paused or points-off account")
+	e.s.pointsMu.Unlock()
+	assert.Empty(t, backend.started)
+
+	require.NoError(t, store.SavePointsAccountSettings(context.Background(), e.s.d.Q, id, store.PointsAccountSettings{Enabled: true, Streams: 2}))
+	got := e.s.pointsFor("twitch", "channel", []string{id}, e.s.pointsActive)
+	require.Len(t, got, 1)
+	assert.Equal(t, "channel", recvStarted(t, backend), "an active account does read")
+}
+
+func TestPointsReadsAreLimitedToTwoInFlight(t *testing.T) {
+	backend := newSlotBackend(false)
+	e, _ := accountsEnv(t, backend)
+	id := e.createAccount("twitch", "T")
+	require.NoError(t, e.s.d.Sessions.Put(context.Background(), id, platform.Session{AccessToken: "token", ExpiresAt: time.Now().Add(time.Hour)}))
+	for _, ch := range []string{"c1", "c2", "c3", "c4", "c5"} {
+		e.s.pointsFor("twitch", ch, []string{id}, e.s.pointsActive)
+	}
+
+	recvStarted(t, backend)
+	recvStarted(t, backend)
+	require.Eventually(t, func() bool {
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		return backend.inflight == pointsReadSlots
+	}, 2*time.Second, time.Millisecond)
+	require.Never(t, func() bool {
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		return backend.inflight > pointsReadSlots || len(backend.started) > 0
+	}, 100*time.Millisecond, time.Millisecond, "a third read entered while two were in flight")
+	close(backend.release)
+	for range 3 {
+		recvStarted(t, backend)
+	}
+	waitPointsIdle(t, e)
+	backend.mu.Lock()
+	assert.Equal(t, pointsReadSlots, backend.peak)
+	backend.mu.Unlock()
+}
+
+func TestPointsQueuedReadSkipsAccountPausedWhileWaiting(t *testing.T) {
+	backend := newSlotBackend(false)
+	e, _ := accountsEnv(t, backend)
+	id := e.createAccount("twitch", "T")
+	_, token := e.session()
+	require.NoError(t, e.s.d.Sessions.Put(context.Background(), id, platform.Session{AccessToken: "token", ExpiresAt: time.Now().Add(time.Hour)}))
+	for _, ch := range []string{"c1", "c2", "c3"} {
+		e.s.pointsFor("twitch", ch, []string{id}, e.s.pointsActive)
+	}
+	recvStarted(t, backend)
+	recvStarted(t, backend) // the third read is now queued behind both slots
+
+	resp, body := e.do("PUT", "/api/accounts/"+id+"/enabled", token, map[string]bool{"enabled": false})
+	require.Equal(t, 204, resp.StatusCode, string(body))
+	close(backend.release)
+	waitPointsIdle(t, e)
+	assert.Empty(t, backend.started, "the queued read must not run for an account paused while it waited")
+}
+
+func TestPointsNoProgramClearsStaleBalance(t *testing.T) {
+	backend := newSlotBackend(true)
+	backend.errs["nop"] = fmt.Errorf("read: %w", platform.ErrNoChannelPoints)
+	e, _ := accountsEnv(t, backend)
+	id := e.createAccount("twitch", "T")
+	require.NoError(t, e.s.d.Sessions.Put(context.Background(), id, platform.Session{AccessToken: "token", ExpiresAt: time.Now().Add(time.Hour)}))
+	balance := 99
+	old := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	e.s.pointsMu.Lock()
+	e.s.pointsCache = map[string]pointBalanceEntry{id + "/nop": {balance: &balance, updatedAt: &old, lastAttempt: time.Now().Add(-2 * time.Hour)}}
+	e.s.pointsMu.Unlock()
+
+	got := e.s.pointsFor("twitch", "nop", []string{id}, e.s.pointsActive)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].Balance, "the old value is shown until the read answers")
+	recvStarted(t, backend)
+	waitPointsIdle(t, e)
+
+	e.s.pointsMu.Lock()
+	entry := e.s.pointsCache[id+"/nop"]
+	e.s.pointsMu.Unlock()
+	assert.True(t, entry.noProgram)
+	assert.Nil(t, entry.balance, "a channel without a points program keeps no stale balance")
+	assert.Nil(t, entry.updatedAt)
+}
+
+func TestForceViewChecksEachAccountOncePerResponse(t *testing.T) {
+	e, _ := accountsEnv(t) // no twitch backend: spawned reads return before logging
+	id := e.createAccount("twitch", "T")
+	require.NoError(t, e.s.d.Q.UpsertSettingString(context.Background(), gen.UpsertSettingStringParams{Key: "points:account:" + id, Value: []byte("{not json")}))
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	view := e.s.forceView([]store.ForceChannel{
+		{Platform: "twitch", Channel: "c1", Accounts: []string{id}},
+		{Platform: "twitch", Channel: "c2", Accounts: []string{id}},
+		{Platform: "twitch", Channel: "c3", Accounts: []string{id}},
+	})
+	require.Len(t, view.Channels, 3)
+	waitPointsIdle(t, e)
+	assert.Equal(t, 1, strings.Count(logs.String(), "points settings unreadable"), "one settings read per account per response")
+}
+
+func TestPointsNoProgramIsRememberedForTTLButOtherErrorsRetry(t *testing.T) {
+	backend := newSlotBackend(true)
+	backend.errs["nop"] = fmt.Errorf("read: %w", platform.ErrNoChannelPoints)
+	backend.errs["boom"] = errors.New("provider unavailable")
+	e, _ := accountsEnv(t, backend)
+	id := e.createAccount("twitch", "T")
+	require.NoError(t, e.s.d.Sessions.Put(context.Background(), id, platform.Session{AccessToken: "token", ExpiresAt: time.Now().Add(time.Hour)}))
+	setAttempt := func(channel string, age time.Duration) {
+		e.s.pointsMu.Lock()
+		defer e.s.pointsMu.Unlock()
+		entry := e.s.pointsCache[id+"/"+channel]
+		entry.lastAttempt = time.Now().Add(-age)
+		e.s.pointsCache[id+"/"+channel] = entry
+	}
+
+	e.s.pointsFor("twitch", "nop", []string{id}, e.s.pointsActive)
+	e.s.pointsFor("twitch", "boom", []string{id}, e.s.pointsActive)
+	recvStarted(t, backend)
+	recvStarted(t, backend)
+	waitPointsIdle(t, e)
+	e.s.pointsMu.Lock()
+	assert.True(t, e.s.pointsCache[id+"/nop"].noProgram)
+	assert.False(t, e.s.pointsCache[id+"/boom"].noProgram)
+	e.s.pointsMu.Unlock()
+
+	setAttempt("nop", 10*time.Minute)
+	setAttempt("boom", 10*time.Minute)
+	e.s.pointsFor("twitch", "nop", []string{id}, e.s.pointsActive)
+	e.s.pointsFor("twitch", "boom", []string{id}, e.s.pointsActive)
+	assert.Equal(t, "boom", recvStarted(t, backend), "the generic error retries after 5 minutes")
+	waitPointsIdle(t, e)
+	assert.Empty(t, backend.started, "no-program is not retried after 5 minutes")
+
+	setAttempt("nop", 2*time.Hour)
+	e.s.pointsFor("twitch", "nop", []string{id}, e.s.pointsActive)
+	assert.Equal(t, "nop", recvStarted(t, backend), "no-program is retried after the TTL")
+}
+
+func TestPutForceWatchEvictsBalancesOfRemovedChannels(t *testing.T) {
+	e := newResEnv(t, nil)
+	_, tok := e.session()
+	balance := 5
+	now := time.Now()
+	e.s.pointsMu.Lock()
+	e.s.pointsCache = map[string]pointBalanceEntry{
+		"a1/keep": {balance: &balance, lastAttempt: now},
+		"a1/drop": {balance: &balance, lastAttempt: now},
+	}
+	e.s.pointsInFlight = map[string]*pointBalanceFlight{"a1/drop": {}}
+	e.s.pointsMu.Unlock()
+
+	resp, b := e.do("PUT", "/api/force-watch", tok, map[string]any{"channels": []map[string]any{
+		{"platform": "twitch", "channel": "keep", "accounts": []string{"a1"}},
+	}})
+	require.Equal(t, 200, resp.StatusCode, string(b))
+	e.s.pointsMu.Lock()
+	defer e.s.pointsMu.Unlock()
+	assert.Contains(t, e.s.pointsCache, "a1/keep")
+	assert.NotContains(t, e.s.pointsCache, "a1/drop")
+	assert.Empty(t, e.s.pointsInFlight)
 }
 
 func TestHomeSkipsPointRefreshWithoutActiveWatchers(t *testing.T) {
@@ -229,7 +522,7 @@ func TestHomeSkipsPointRefreshWithoutActiveWatchers(t *testing.T) {
 
 func TestPointsBalanceKickHasNoProjection(t *testing.T) {
 	e := newEnv(t)
-	assert.Nil(t, e.s.pointsFor("kick", "channel", []string{"a1"}))
+	assert.Nil(t, e.s.pointsFor("kick", "channel", []string{"a1"}, e.s.pointsActive))
 }
 
 func TestPointBalanceIdentityChangeFencesOldRead(t *testing.T) {
@@ -257,7 +550,7 @@ func TestPointBalanceIdentityChangeFencesOldRead(t *testing.T) {
 
 	e.s.forgetPointBalances(id)
 	require.NoError(t, e.s.d.Sessions.Put(context.Background(), id, platform.Session{AccessToken: "new", ExpiresAt: time.Now().Add(time.Hour)}))
-	e.s.pointsFor("twitch", channel, []string{id})
+	e.s.pointsFor("twitch", channel, []string{id}, e.s.pointsActive)
 	newCall := <-backend.calls
 	require.Equal(t, "new", newCall.token)
 

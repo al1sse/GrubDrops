@@ -51,6 +51,18 @@ func forceOn(t *testing.T, r *Runner, login string) Snapshot {
 	return s
 }
 
+// A drop-mode force watch scans the plan at the 5-minute recheck pace, not
+// every minute; a points-only one stays on the long pace.
+func TestForceCheckIntervalByMode(t *testing.T) {
+	f := platformtest.NewFake()
+	if got := newRunner(f, nil).forceCheckInterval(); got != recheckInterval {
+		t.Fatalf("drop-mode force interval=%v, want %v", got, recheckInterval)
+	}
+	if got := newRunner(f, func(c *Config) { c.PointsOnly = true }).forceCheckInterval(); got != forcePointsScanInterval {
+		t.Fatalf("points-only force interval=%v, want %v", got, forcePointsScanInterval)
+	}
+}
+
 func TestForceWatch_StartsWhenQueueEmpty(t *testing.T) {
 	f := platformtest.NewFake()
 	setLive(f, "a", false)

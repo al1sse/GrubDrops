@@ -23,15 +23,6 @@ export function parseChannel(raw: string): { platform: Platform; name: string } 
 	return { platform, name };
 }
 
-/** New list with item i swapped with its neighbour d (-1 up, 1 down). Out of range returns a plain copy. */
-export function moveChannel<T>(list: readonly T[], i: number, d: number): T[] {
-	const out = list.slice();
-	const j = i + d;
-	if (i < 0 || i >= list.length || j < 0 || j >= list.length) return out;
-	[out[i], out[j]] = [out[j], out[i]];
-	return out;
-}
-
 /**
  * ids still in known. A deleted account leaves its id behind until the list
  * reloads, and the server rejects unknown ids. An empty known set (accounts
